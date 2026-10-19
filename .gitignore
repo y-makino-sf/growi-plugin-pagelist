@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+/.vite/
+*.local
+npm-debug.log*

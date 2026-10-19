@@ -1,0 +1,21 @@
+/* 本番のGROWIには読み込まれない、ローカルポータル専用の外観です。 */
+:root { font-family: "Yu Gothic UI", "Meiryo", sans-serif; color: #253735; background: #f6f8f7; letter-spacing: 0; }
+body { margin: 0; font-family: inherit; color: inherit; background: linear-gradient(180deg, #ecf4f0 0, #fafbfa 300px); }
+.portal-width { max-width: 1060px; margin: 0 auto; padding: 0 28px; }
+.portal-header { border-bottom: 1px solid #dbe4df; background: #fff; }
+.portal-header .portal-width { display: flex; align-items: center; gap: 12px; min-height: 64px; font-size: .8rem; font-weight: 600; }
+.portal-header svg { color: #118374; flex-shrink: 0; }
+.sandbox-label { margin-left: auto; font-size: .62rem; color: #6d7f78; }
+.portal-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 38px 0 26px; }
+.portal-eyebrow { color: #247f6a; font-size: .67rem; margin: 0 0 10px; }
+h1 { font-family: "Yu Mincho", "MS PMincho", serif; font-size: 2rem; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+.portal-subtitle { margin: 12px 0 0; font-size: .8rem; color: #697c73; }
+.portal-tools { display: flex; gap: 8px; }
+.portal-tools button { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #bacdc4; border-radius: 4px; background: white; color: #247f6a; }
+.portal-tools button[aria-pressed="true"] { background: #d8ece1; }
+.portal-content h2 { font-size: 1.12rem; font-weight: 600; margin: 30px 0 14px; padding-top: 12px; border-top: 2px solid #c7d8cf; }
+.portal-content h2:first-child { margin-top: 0; }
+.portal-content .growi-pagelist .card { background: #fff; }
+.markdown-editor { width: 100%; min-height: 250px; padding: 16px; border: 1px solid #b5cbbf; border-radius: 4px; font: .83rem/1.8 Consolas, "Meiryo", monospace; margin-bottom: 24px; }
+footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 1px solid #dbe4df; margin-top: 32px; padding: 20px 0 28px; font-size: .68rem; color: #6d7f78; }
+@media (max-width: 640px) { .portal-width { padding: 0 18px; } h1 { font-size: 1.5rem; } .portal-heading { padding-top: 28px; } .sandbox-label { display: none; } }

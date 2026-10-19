@@ -1,0 +1,41 @@
+{
+  "name": "growi-plugin-pagelist",
+  "version": "1.0.0",
+  "description": "GROWIの最新・人気・おすすめページ一覧プラグイン",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:build": "node scripts/verify-build.mjs"
+  },
+  "growiPlugin": { "schemaVersion": "4", "types": ["script"] },
+  "dependencies": {
+    "@growi/pluginkit": "^1.2.8",
+    "@growi/remark-growi-directive": "^1.0.0",
+    "lucide-react": "^0.468.0",
+    "unist-util-visit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/mdast": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "bootstrap": "^5.3.3",
+    "jsdom": "^25.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.0",
+    "typescript": "^5.5.0",
+    "unified": "^11.0.5",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

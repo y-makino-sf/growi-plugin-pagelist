@@ -74,7 +74,7 @@ $pagelist(/Engineering/Guides, recursive=false)
 1. GROWIの **「管理画面」** ＞ **「プラグイン」** を開きます。
 2. **「プラグインをインストール」** から以下のリポジトリURLを入力します。
    ```text
-   [https://github.com/](https://github.com/)<あなたのGitHubアカウント名>/growi-plugin-pagelist
+   https://github.com/<あなたのGitHubアカウント名>/growi-plugin-pagelist
    ```
 
 ---
@@ -95,6 +95,17 @@ npm test
 npm run build
 npm run verify:build
 ```
+
+### 実装・検証上の補足
+
+- `tag` のみを指定するとWiki全体（`/`）を検索します。範囲を限定する場合は `path` も指定してください。
+- 起点ページに加え、表示中のページも一覧から除外します。
+- 全体の並び順と除外後のページ送りを正確にするため、APIの続きを取得してからソート・階層フィルタ・ページ分割を行います。人気順・タグ検索・直下探索は100件単位、通常一覧は `limit` 単位で取得します。大規模Wikiでは対象パスを絞ってください。
+- API応答の `pages`、`data.pages`、検索の `data[].pageData` を処理します。API失敗時はエラーと再試行ボタンを表示します。
+- SandboxはローカルのモックAPIを使います。Markdown編集と初期化はヘッダーのツールボタンで操作できます。既存ポートが使用中ならViteが別ポートで起動します。
+- 単体テストは必須7項目と境界値を含む17ケースです。本番ビルドではソース・Sandbox・テストの型も検査します。
+- `dist/.vite/manifest.json` と生成JS/CSSを必ず配布リポジトリへ含めてください。`npm run verify:build` は固定エントリと成果物を検証します。
+- GROWI v6/v7/v8の実サーバーでの疎通・権限制御・検索設定の確認は別途必要です。ローカルテストは各バージョンでの動作保証を代替しません。
 
 ---
 
