@@ -42,6 +42,8 @@ const MOCK_PAGES = [
   sample('/TechKnowhow/新入社員のための開発環境セットアップ', 2, 57, 17, '田中 葵', ['pickup']),
   sample('/TechKnowhow/レビュー観点チェックリスト', 5, 45, 14, '山田 太郎'),
   sample('/TechKnowhow/Security/秘密情報の取り扱い', 6, 40, 11, '佐藤 花子', ['必読']),
+  // 高い人気スコアとタグを持っていても、権限確認で除外される記事です。
+  sample('/TechKnowhow/Private/非公開の検証記事', .01, 999, 99, '管理者', ['pickup']),
 ];
 // 本文は一覧へ混ぜず、標準の追加情報APIからIDで対応させます。空・欠落も別々に用意します。
 const MOCK_BODIES: Record<string, string | null> = {
@@ -58,12 +60,16 @@ const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, window.location.origin);
   if (url.pathname === '/_api/v3/page-listing/info') {
-    // ?mockExcerptError=500で、一時的な取得失敗と一覧の退避表示を手動確認できます。
-    const failure = Number(new URL(window.location.href).searchParams.get('mockExcerptError'));
-    if ([403, 404, 500].includes(failure)) return new Response('{}', { status: failure });
+    // 権限確認失敗と、許可後の本文取得失敗を独立して確認できます。
+    const settings = new URL(window.location.href).searchParams;
+    const attachShortBody = url.searchParams.get('attachShortBody') === 'true';
+    const failure = Number(settings.get(attachShortBody ? 'mockExcerptError' : 'mockPermissionError'));
+    if ([401, 403, 404, 500].includes(failure)) return new Response('{}', { status: failure });
     if (init?.signal?.aborted) throw new DOMException('取得が中止されました。', 'AbortError');
-    const info = Object.fromEntries(url.searchParams.getAll('pageIds[]').filter((id) => id in MOCK_BODIES).map((id) => [id, {
-      revisionShortBody: MOCK_BODIES[id] === null ? undefined : Array.from(MOCK_BODIES[id] ?? '').slice(0, 350).join(''),
+    const info = Object.fromEntries(url.searchParams.getAll('pageIds[]').filter((id) =>
+      Object.hasOwn(MOCK_BODIES, id) && settings.get('mockDenyAll') !== 'true').map((id) => [id, {
+      isEmpty: false,
+      revisionShortBody: !attachShortBody || MOCK_BODIES[id] === null ? undefined : Array.from(MOCK_BODIES[id] ?? '').slice(0, 350).join(''),
     }]));
     return new Response(JSON.stringify({ data: info }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }

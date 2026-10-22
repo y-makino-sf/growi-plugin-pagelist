@@ -18,8 +18,39 @@ export interface GrowiPageItem {
 }
 // GROWI 7.1.9では、本文閲覧権限がない場合にrevisionShortBodyが返らないことがあります。
 interface PageListingInfo {
+  isEmpty: boolean;
   revisionShortBody?: string | null;
 }
+
+// 閲覧者で絞られたIDだけを採用します。isEmptyは権限フラグではなく応答形式の検証に使います。
+export const parsePageListingInfo = (json: unknown, requestedIds: string[]): Record<string, PageListingInfo> => {
+  const data = json && typeof json === 'object' ? (json as { data?: unknown }).data : undefined;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('APIの応答形式が不正です。');
+  const info = data as Record<string, unknown>;
+  const accepted: Record<string, PageListingInfo> = Object.create(null);
+  for (const id of requestedIds) {
+    const item = Object.hasOwn(info, id) ? info[id] : undefined;
+    if (item == null) continue;
+    if (typeof item !== 'object' || Array.isArray(item) || typeof (item as PageListingInfo).isEmpty !== 'boolean') {
+      throw new Error('APIのページ情報が不正です。');
+    }
+    const record = item as PageListingInfo & { isNotFound?: boolean; isForbidden?: boolean };
+    if (record.isNotFound === true || record.isForbidden === true) continue;
+    accepted[id] = record;
+  }
+  return accepted;
+};
+
+// 権限確認と本文取得で同じ標準APIを使いますが、本文は必要な場合だけ要求します。
+const fetchPageListingInfo = async (ids: string[], attachShortBody: boolean, signal: AbortSignal) => {
+  const params = new URLSearchParams({ attachShortBody: String(attachShortBody) });
+  ids.forEach((id) => params.append('pageIds[]', id));
+  const response = await fetch(`/_api/v3/page-listing/info?${params}`, {
+    method: 'GET', credentials: 'same-origin', signal, cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return parsePageListingInfo(await response.json(), ids);
+};
 export type SortMode = 'updatedAt' | 'createdAt' | 'popular' | 'views' | 'likes';
 export type ViewMode = 'list' | 'card';
 export interface SubordinatedPageListProps {
@@ -164,6 +195,9 @@ export const createSubordinatedPageList = (ReactInstance: typeof React) => {
     const excerptCache = useRef(new Map<string, string>());
     const [excerptRetry, setExcerptRetry] = useState(0);
     const [excerpts, setExcerpts] = useState<{ key: string; bodies: Record<string, string>; loading: boolean; error: string | null }>({ key: '', bodies: {}, loading: false, error: null });
+    const [recheck, setRecheck] = useState(0);
+    const [isVisible, setIsVisible] = useState(document.visibilityState !== 'hidden');
+    const [authorization, setAuthorization] = useState<{ key: string; ids: string[]; loading: boolean; error: boolean }>({ key: '', ids: [], loading: true, error: false });
 
     useEffect(() => {
       const controller = new AbortController();
@@ -179,15 +213,64 @@ export const createSubordinatedPageList = (ReactInstance: typeof React) => {
     }, [resolvedPath, trimmedTag, batchSize, listKey]);
     useEffect(() => { setCurrentPage(1); }, [limitNumber, isRecursive, sortMode]);
 
-    const sorted = sortPages(filterPagesByHierarchy(result.pages, resolvedPath, isRecursive)
-      .filter((page) => normalizeGrowiPath(page.path) !== selfPath), sortMode);
+    useEffect(() => {
+      const onVisibilityChange = () => {
+        const visible = document.visibilityState !== 'hidden';
+        setIsVisible(visible);
+        if (visible) {
+          excerptCache.current.clear();
+          setRecheck((value) => value + 1);
+        }
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    }, []);
+
+    const sourceReady = result.scope === listKey && !result.loading && !result.error;
+    const candidates = filterPagesByHierarchy(result.pages, resolvedPath, isRecursive)
+      .filter((page) => normalizeGrowiPath(page.path) !== selfPath);
+    const candidateKey = JSON.stringify(sourceReady ? candidates.map((page) => page._id) : []);
+    const authorizationKey = JSON.stringify([listKey, candidateKey, currentPage, recheck, isVisible]);
+    useEffect(() => {
+      const controller = new AbortController();
+      if (!sourceReady || !isVisible) return () => controller.abort();
+      setAuthorization({ key: authorizationKey, ids: [], loading: true, error: false });
+      const ids = JSON.parse(candidateKey) as string[];
+      void (async () => {
+        try {
+          const allowed: string[] = [];
+          // 全候補を確認してから公開し、未許可の件数やランキングの欠番を表示しません。
+          for (let start = 0; start < ids.length; start += 50) {
+            const chunk = await fetchPageListingInfo(ids.slice(start, start + 50), false, controller.signal);
+            if (controller.signal.aborted) return;
+            allowed.push(...Object.keys(chunk));
+          }
+          if (controller.signal.aborted) return;
+          const allowedIds = new Set(allowed);
+          for (const key of excerptCache.current.keys()) {
+            if (!allowedIds.has((JSON.parse(key) as string[])[0])) excerptCache.current.delete(key);
+          }
+          setAuthorization({ key: authorizationKey, ids: allowed, loading: false, error: false });
+        } catch {
+          if (!controller.signal.aborted) {
+            excerptCache.current.clear();
+            setAuthorization({ key: authorizationKey, ids: [], loading: false, error: true });
+          }
+        }
+      })();
+      return () => controller.abort();
+    }, [sourceReady, isVisible, candidateKey, authorizationKey]);
+
+    const permissionReady = sourceReady && isVisible && authorization.key === authorizationKey && !authorization.loading && !authorization.error;
+    const allowedIds = new Set(permissionReady ? authorization.ids : []);
+    const sorted = sortPages(candidates.filter((page) => allowedIds.has(page._id)), sortMode);
     const totalPages = Math.max(1, Math.ceil(sorted.length / limitNumber));
     const activePage = Math.min(currentPage, totalPages);
     const pages = sorted.slice((activePage - 1) * limitNumber, activePage * limitNumber);
-    const ready = result.scope === listKey && !result.loading && !result.error;
+    const ready = permissionReady;
     // slice後の配列参照ではなくIDと更新日時を依存値にし、再描画による取得ループを防ぎます。
     const visibleKey = JSON.stringify(ready ? pages.map((page) => [page._id, page.updatedAt]) : []);
-    const excerptKey = JSON.stringify([listKey, visibleKey]);
+    const excerptKey = JSON.stringify([authorizationKey, visibleKey]);
     useEffect(() => {
       const controller = new AbortController();
       if (!excerptOptions.enabled) return () => controller.abort();
@@ -210,17 +293,19 @@ export const createSubordinatedPageList = (ReactInstance: typeof React) => {
         for (let start = 0; start < pending.length; start += 50) {
           const chunk = pending.slice(start, start + 50);
           try {
-            const params = new URLSearchParams({ attachShortBody: 'true' });
-            chunk.forEach(([id]) => params.append('pageIds[]', id));
-            const response = await fetch(`/_api/v3/page-listing/info?${params}`, {
-              method: 'GET', credentials: 'same-origin', signal: controller.signal,
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const json = await response.json() as { data?: Record<string, PageListingInfo | null> };
-            if (!json?.data || typeof json.data !== 'object' || Array.isArray(json.data)) throw new Error('APIの応答形式が不正です。');
+            const info = await fetchPageListingInfo(chunk.map(([id]) => id), true, controller.signal);
             if (controller.signal.aborted) return;
+            const removed = new Set(chunk.filter(([id]) => !Object.hasOwn(info, id)).map(([id]) => id));
+            if (removed.size) {
+              // 本文取得までの間に非公開になった記事を候補からも外し、繰り返し再取得を防ぎます。
+              excerptCache.current.clear();
+              setResult((previous) => previous.scope === listKey
+                ? { ...previous, pages: previous.pages.filter((page) => !removed.has(page._id)) }
+                : previous);
+              return;
+            }
             chunk.forEach((entry) => {
-              const body = json.data?.[entry[0]]?.revisionShortBody;
+              const body = info[entry[0]]?.revisionShortBody;
               // 空本文は成功として保持し、権限等による本文欠落はキャッシュしません。
               if (typeof body !== 'string') return;
               bodies[entry[0]] = body;
@@ -238,6 +323,8 @@ export const createSubordinatedPageList = (ReactInstance: typeof React) => {
 
     if (result.scope !== listKey || result.loading) return <div className="growi-pagelist" role="status" data-testid="pagelist-loading">ページ一覧を読み込み中...</div>;
     if (result.error) return <div className="growi-pagelist" role="alert" data-testid="pagelist-error">{result.error} <button type="button" onClick={() => setRetry(retry + 1)}>再試行</button></div>;
+    if (authorization.key === authorizationKey && authorization.error) return <div className="growi-pagelist" role="alert" data-testid="pagelist-permission-error">閲覧権限を確認できませんでした。<button type="button" onClick={() => setRecheck((value) => value + 1)}>再試行</button></div>;
+    if (!permissionReady) return <div className="growi-pagelist" role="status" data-testid="pagelist-loading">閲覧権限を確認中...</div>;
     if (!pages.length) return <div className="growi-pagelist" data-testid="pagelist-empty">該当するページはありません。</div>;
 
     const pageContent = (page: GrowiPageItem, index: number) => {
