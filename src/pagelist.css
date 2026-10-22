@@ -4,7 +4,7 @@
 .growi-pagelist .pagelist-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .growi-pagelist .pagelist-grid > .col { width: auto; padding: 0; margin: 0; min-width: 0; }
 .growi-pagelist .card { border: 1px solid #a0a0a050; border-radius: 6px; background: transparent; padding: 16px; height: 100%; }
-.growi-pagelist .pagelist-title-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.growi-pagelist .pagelist-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .growi-pagelist .pagelist-link { color: #087d72; font-weight: 600; overflow-wrap: anywhere; text-decoration: none; min-width: 0; }
 .growi-pagelist .pagelist-link:hover { text-decoration: underline; }
 .growi-pagelist .pagelist-new { color: #b62c40; font-size: 0.65rem; font-weight: 700; flex-shrink: 0; }
@@ -12,7 +12,14 @@
 .growi-pagelist .pagelist-rank-1 { background: #f8d979; color: #493b12; }
 .growi-pagelist .pagelist-rank-2 { background: #dfe5e5; color: #324242; }
 .growi-pagelist .pagelist-rank-3 { background: #d9eee7; color: #225444; }
-.growi-pagelist .pagelist-path { font-size: .75rem; opacity: .65; overflow-wrap: anywhere; margin-top: 6px; }
+.growi-pagelist .pagelist-path { font-size: .75rem; opacity: .65; overflow-wrap: anywhere; margin-bottom: 6px; }
+.growi-pagelist .pagelist-avatar { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; object-fit: cover; }
+.growi-pagelist .pagelist-avatar-fallback { display: inline-grid; place-items: center; background: #80808020; font-size: .75rem; }
+.growi-pagelist .pagelist-views { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: .75rem; opacity: .75; }
+/* 行数は記法のexcerptlinesから指定し、短い本文には固定の高さを設けません。 */
+.growi-pagelist .pagelist-excerpt { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.6; font-size: .84rem; margin: 10px 0 0; opacity: .85; }
+.growi-pagelist .pagelist-excerpt-loading { margin-top: 10px; font-size: .84rem; opacity: .55; line-height: 1.6; background: #80808008; }
+.growi-pagelist .pagelist-excerpt-error { margin-top: 12px; font-size: .78rem; color: #b62c40; }
 .growi-pagelist .pagelist-metadata { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: .72rem; opacity: .75; margin-top: 10px; }
 .growi-pagelist .pagelist-author { display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
 .growi-pagelist .pagelist-author img { border-radius: 50%; object-fit: cover; }

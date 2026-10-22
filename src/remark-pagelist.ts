@@ -24,6 +24,10 @@ export const remarkPageListPlugin: Plugin<[], Root> = () => (tree) => {
         tag: value('tag', ''),
         view: value('view', 'list').toLowerCase() === 'card' ? 'card' : 'list',
         newdays: value('newdays', '3'),
+        // 値の検証は描画側に集約し、直接呼び出しとMarkdown経由で挙動を揃えます。
+        excerpt: value('excerpt', 'true'),
+        excerptlength: value('excerptlength', '200'),
+        excerptlines: value('excerptlines', '3'),
       },
     };
   });

@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
@@ -9,10 +9,34 @@ import remarkRehype from 'remark-rehype';
 import type { Root as HastRoot, Element } from 'hast';
 import packageJson from '../package.json';
 import { remarkPageListPlugin } from '../src/remark-pagelist';
-import { createSubordinatedPageList, type GrowiPageItem } from '../src/components/SubordinatedPageList';
+import { createExcerptText, normalizeExcerptOptions, createSubordinatedPageList, type GrowiPageItem } from '../src/components/SubordinatedPageList';
 import { activate, deactivate, PLUGIN_NAME } from '../client-entry';
 
 const PageList = createSubordinatedPageList(React);
+// 既存機能の回帰検証と抜粋取得の検証を分け、通信件数の意味を明確にします。
+const LegacyPageList = (props: React.ComponentProps<typeof PageList>) => React.createElement(PageList, { excerpt: 'false', ...props });
+// 元Markdownの構造を解析し、表示文字と最大量だけを取り出すことを確認します。
+describe('抜粋の整形', () => {
+  it('装飾・リンク・画像をテキスト化し、段落と箇条書きの間を空白で区切る', () => {
+    expect(createExcerptText('# 見出し\n\n**重要**な[リンク](https://example.com)と`code`\n\n- 一つ\n- 二つ\n\n![図](image.png)', 350))
+      .toBe('見出し 重要なリンクとcode 一つ 二つ 図');
+  });
+  it('HTMLノードを除外し、途中で切れたMarkdownも安全なテキストにする', () => {
+    expect(createExcerptText('<script>alert(1)</script>\n\n本文 <img src=x onerror=alert(1)> **途中', 350)).toBe('本文 **途中');
+  });
+  it('省略記号を上限に含め、絵文字のサロゲートペアを壊さない', () => {
+    expect(createExcerptText('日本😀語の本文', 4)).toBe('日本😀…');
+    expect(createExcerptText('文章', 1)).toBe('…');
+    expect(createExcerptText('短文', 5)).toBe('短文');
+  });
+  it('オンオフ・既定値・不正値・最大値を正規化する', () => {
+    expect(normalizeExcerptOptions()).toEqual({ enabled: true, length: 200, lines: 3 });
+    expect(normalizeExcerptOptions(' FALSE ', '999', '99')).toEqual({ enabled: false, length: 350, lines: 10 });
+    for (const value of ['', '0', '-1', '1.5', 'abc']) {
+      expect(normalizeExcerptOptions('invalid', value, value)).toEqual({ enabled: true, length: 200, lines: 3 });
+    }
+  });
+});
 // 件数と更新日時を独立させ、人気スコア・閲覧数・いいね数の順序を区別します。
 const page = (path: string, views = 0, likes = 0, days = 1): GrowiPageItem => ({
   _id: path, path, updatedAt: new Date(Date.now() - days * 86400000).toISOString(),
@@ -25,6 +49,20 @@ const fixtures = [page('/Tech'), page('/Tech/Views', 10, 0), page('/Tech/Likes',
 const mockPages = (pages = fixtures) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
   ok: true, json: async () => ({ pages, totalCount: pages.length }),
 }));
+// 実際と同じ一覧→追加情報の2段階にし、追加通信だけを独立して数えます。
+const apiResponse = (json: unknown, status = 200) => ({ ok: status < 400, status, json: async () => json });
+const mockExcerptApi = (pages: GrowiPageItem[], info: Record<string, { revisionShortBody?: string | null } | null>) => {
+  const infoFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => apiResponse({ data: info }));
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), window.location.origin);
+    if (url.pathname === '/_api/v3/page-listing/info') return infoFetch(input, init);
+    return apiResponse(url.pathname === '/_api/search'
+      ? { data: pages.map((pageData) => ({ pageData })), totalCount: pages.length }
+      : { data: { pages, totalCount: pages.length } });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return { fetchMock, infoFetch };
+};
 afterEach(() => { cleanup(); deactivate(); vi.unstubAllGlobals(); window.history.replaceState({}, '', '/'); });
 
 describe('仕様書の必須7項目', () => {
@@ -35,27 +73,27 @@ describe('仕様書の必須7項目', () => {
 
   it('2. 実際のGROWI記法から全オプションをカスタム要素へ変換する', async () => {
     const processor = unified().use(remarkParse).use(remarkGrowiDirective).use(remarkPageListPlugin).use(remarkRehype);
-    const tree = await processor.run(processor.parse('$pagelist(/Tech, limit=6, recursive=false, sort=popular, tag=pickup, view=card, newdays=7)')) as HastRoot;
+    const tree = await processor.run(processor.parse('$pagelist(/Tech, limit=6, recursive=false, sort=popular, tag=pickup, view=card, newdays=7, excerpt=false, excerptlength=80, excerptlines=1)')) as HastRoot;
     const element = tree.children.find((node) => node.type === 'element' && node.tagName === 'growi-pagelist') as Element;
-    expect(element?.properties).toEqual({ targetpath: '/Tech', limit: '6', recursive: 'false', sort: 'popular', tag: 'pickup', view: 'card', newdays: '7' });
+    expect(element?.properties).toEqual({ targetpath: '/Tech', limit: '6', recursive: 'false', sort: 'popular', tag: 'pickup', view: 'card', newdays: '7', excerpt: 'false', excerptlength: '80', excerptlines: '1' });
   });
 
   it('3. 再帰探索では全階層を含め、起点・表示中ページ・隣接パスを除外する', async () => {
     window.history.replaceState({}, '', '/Tech/Views');
     mockPages();
-    render(React.createElement(PageList, { targetpath: '/Tech/', recursive: 'true' }));
-    expect(await screen.findByRole('link', { name: '/Tech/Sub/Popular' })).toBeVisible();
-    expect(screen.queryByRole('link', { name: '/Tech' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '/Tech/Views' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '/Technology/Outside' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '/Tech/Likes' })).toBeVisible();
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech/', recursive: 'true' }));
+    expect(await screen.findByRole('link', { name: 'Popular' })).toHaveAttribute('href', '/Tech/Sub/Popular');
+    expect(screen.queryByRole('link', { name: 'Tech' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Views' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Outside' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Likes' })).toHaveAttribute('href', '/Tech/Likes');
   });
 
   it('4. recursive=falseでは直下だけを表示する', async () => {
     mockPages();
-    render(React.createElement(PageList, { targetpath: '/Tech', recursive: 'false' }));
-    expect(await screen.findByRole('link', { name: '/Tech/Views' })).toBeVisible();
-    expect(screen.queryByRole('link', { name: '/Tech/Sub/Popular' })).not.toBeInTheDocument();
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech', recursive: 'false' }));
+    expect(await screen.findByRole('link', { name: 'Views' })).toHaveAttribute('href', '/Tech/Views');
+    expect(screen.queryByRole('link', { name: 'Popular' })).not.toBeInTheDocument();
     const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string, window.location.origin);
     expect(url.searchParams.get('limit')).toBe('100');
   });
@@ -66,9 +104,9 @@ describe('仕様書の必須7項目', () => {
     ['views', ['/Tech/Views', '/Tech/Sub/Popular', '/Tech/Likes']],
   ])('5. sort=%sを降順にし、順位とメトリクスを表示する', async (sort, expected) => {
     mockPages();
-    render(React.createElement(PageList, { targetpath: '/Tech', sort }));
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech', sort }));
     await screen.findByTestId('pagelist-view-list');
-    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual(expected);
+    expect(screen.getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual(expected);
     expect(screen.getByTestId('pagelist-rank-1')).toHaveTextContent('1位');
     expect(screen.getAllByTitle('閲覧者数')).toHaveLength(3);
     expect(screen.getAllByTitle('いいね数')).toHaveLength(3);
@@ -78,7 +116,7 @@ describe('仕様書の必須7項目', () => {
     const pages = [page('/Tech/Pickup')];
     const response = format === 'pageData' ? { data: pages.map((item) => ({ pageData: item })) } : { [format]: pages };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => response }));
-    render(React.createElement(PageList, { tag: 'pickup', view: 'card' }));
+    render(React.createElement(LegacyPageList, { tag: 'pickup', view: 'card' }));
     const cards = await screen.findByTestId('pagelist-view-card');
     expect(within(cards).getByRole('link', { name: 'Pickup' })).toBeVisible();
     const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string, window.location.origin);
@@ -116,8 +154,8 @@ describe('境界値と非同期処理の回帰検証', () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ data: { pages: first, totalCount: 101 } }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { pages: [last], totalCount: 101 } }) });
     vi.stubGlobal('fetch', fetchMock);
-    render(React.createElement(PageList, { targetpath: '/Tech', sort: 'popular', limit: '1' }));
-    expect(await screen.findByRole('link', { name: '/Tech/Winner' })).toBeVisible();
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech', sort: 'popular', limit: '1' }));
+    expect(await screen.findByRole('link', { name: 'Winner' })).toHaveAttribute('href', '/Tech/Winner');
     fireEvent.click(screen.getByRole('button', { name: '次へ' }));
     expect(screen.getByTestId('pagelist-page-info')).toHaveTextContent('2 / 101');
     expect(screen.getByTestId('pagelist-rank-2')).toBeVisible();
@@ -126,36 +164,37 @@ describe('境界値と非同期処理の回帰検証', () => {
 
   it('NEWの期限、未来日付、newdays=0を扱う', async () => {
     mockPages([page('/Tech/New', 0, 0, 1), page('/Tech/Old', 0, 0, 10), page('/Tech/Future', 0, 0, -1)]);
-    const { rerender } = render(React.createElement(PageList, { targetpath: '/Tech', newdays: '3' }));
+    const { rerender } = render(React.createElement(LegacyPageList, { targetpath: '/Tech', newdays: '3' }));
     await screen.findByTestId('pagelist-view-list');
     expect(screen.getAllByTestId('pagelist-new-badge')).toHaveLength(1);
-    rerender(React.createElement(PageList, { targetpath: '/Tech', newdays: '0' }));
+    rerender(React.createElement(LegacyPageList, { targetpath: '/Tech', newdays: '0' }));
     expect(screen.queryByTestId('pagelist-new-badge')).not.toBeInTheDocument();
   });
 
   it('API失敗を表示し再試行で回復する', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: false, status: 403 })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ pages: [page('/Tech/Recovered')] }) }));
-    render(React.createElement(PageList, { targetpath: '/Tech' }));
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 403');
     fireEvent.click(screen.getByRole('button', { name: '再試行' }));
-    expect(await screen.findByRole('link', { name: '/Tech/Recovered' })).toBeVisible();
+    expect(await screen.findByRole('link', { name: 'Recovered' })).toHaveAttribute('href', '/Tech/Recovered');
   });
 
   it('対象変更後に古い応答が返っても表示を上書きしない', async () => {
     let complete!: (value: unknown) => void;
     vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }))
       .mockResolvedValue({ ok: true, json: async () => ({ pages: [page('/Other/Latest')] }) }));
-    const { rerender } = render(React.createElement(PageList, { targetpath: '/Tech' }));
-    rerender(React.createElement(PageList, { targetpath: '/Other' }));
-    await screen.findByRole('link', { name: '/Other/Latest' });
+    const { rerender } = render(React.createElement(LegacyPageList, { targetpath: '/Tech' }));
+    rerender(React.createElement(LegacyPageList, { targetpath: '/Other' }));
+    await screen.findByRole('link', { name: 'Latest' });
     complete({ ok: true, json: async () => ({ pages: [page('/Tech/Stale')] }) });
-    await waitFor(() => expect(screen.queryByRole('link', { name: '/Tech/Stale' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Stale' })).not.toBeInTheDocument());
   });
 
   it('空結果を表示する', async () => {
     mockPages([]);
-    render(React.createElement(PageList, { targetpath: '/Tech' }));
+    render(React.createElement(LegacyPageList, { targetpath: '/Tech' }));
+
     expect(await screen.findByTestId('pagelist-empty')).toBeVisible();
   });
 
@@ -163,8 +202,195 @@ describe('境界値と非同期処理の回帰検証', () => {
     const processor = unified().use(remarkParse).use(remarkGrowiDirective).use(remarkPageListPlugin).use(remarkRehype);
     const tree = await processor.run(processor.parse('$pagelist(path=/Tech, num=5)')) as HastRoot;
     const element = tree.children[0] as Element;
-    expect(element.properties).toMatchObject({ targetpath: '/Tech', limit: '5', sort: 'updatedAt', recursive: 'true', newdays: '3', view: 'list' });
+    expect(element.properties).toMatchObject({ targetpath: '/Tech', limit: '5', sort: 'updatedAt', recursive: 'true', newdays: '3', view: 'list', excerpt: 'true', excerptlength: '200', excerptlines: '3' });
     const other = await processor.run(processor.parse('$other()')) as HastRoot;
     expect((other.children[0] as Element).tagName).not.toBe('growi-pagelist');
+  });
+});
+
+describe('抜粋の取得と共通表示', () => {
+  it.each([
+    ['list', ''], ['card', ''], ['list', 'pickup'], ['card', 'pickup'],
+  ])('%s表示・tag=%sで標準APIから取得し、5要素を表示する', async (view, tag) => {
+    const item = page('/Tech/Sub/Article', 8, 2);
+    const { fetchMock, infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '# 要点\n\n本文の**抜粋**です。' } });
+    render(React.createElement(PageList, { targetpath: '/Tech', view, tag }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('要点 本文の抜粋です。');
+    expect(screen.getByRole('link', { name: 'Article' })).toHaveAttribute('href', '/Tech/Sub/Article');
+    expect(screen.getByText('/Tech/Sub')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'テスト利用者のアイコン' })).toBeVisible();
+    expect(screen.getByLabelText('閲覧者数 8')).toBeVisible();
+    expect(infoFetch).toHaveBeenCalledTimes(1);
+    const [input, init] = infoFetch.mock.calls[0];
+    const params = new URL(String(input), window.location.origin).searchParams;
+    expect(params.getAll('pageIds[]')).toEqual([item._id]);
+    expect(params.get('attachShortBody')).toBe('true');
+    expect(init?.credentials).toBe('same-origin');
+    expect(String(fetchMock.mock.calls[0][0])).toContain(tag ? '/_api/search?' : '/_api/v3/pages/list?');
+  });
+
+  it.each(['card', 'list'])('excerpt=falseでは%sの抜粋・余白・追加通信がない', async (view) => {
+    const item = page('/Tech/Article');
+    const { infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '表示しない本文' } });
+    render(React.createElement(PageList, { targetpath: '/Tech', view, excerpt: ' FALSE ', excerptlength: '350', excerptlines: '10' }));
+    await screen.findByRole('link', { name: 'Article' });
+    expect(infoFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pagelist-excerpt')).not.toBeInTheDocument();
+    expect(screen.queryByText('抜粋を読み込み中...')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '抜粋を再試行' })).not.toBeInTheDocument();
+  });
+
+  it('表示中のIDだけ取得し、ページ送りと戻る操作で本文を対応させる', async () => {
+    const items = [page('/Tech/First', 0, 0, 1), page('/Tech/Second', 0, 0, 2)];
+    const { infoFetch } = mockExcerptApi(items, {
+      [items[0]._id]: { revisionShortBody: '一番目の本文' }, [items[1]._id]: { revisionShortBody: '二番目の本文' },
+    });
+    render(React.createElement(PageList, { targetpath: '/Tech', limit: '1' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('一番目の本文');
+    expect(new URL(String(infoFetch.mock.calls[0][0]), window.location.origin).searchParams.getAll('pageIds[]')).toEqual([items[0]._id]);
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    await waitFor(() => expect(screen.getByTestId('pagelist-excerpt')).toHaveTextContent('二番目の本文'));
+    fireEvent.click(screen.getByRole('button', { name: '前へ' }));
+    await waitFor(() => expect(screen.getByTestId('pagelist-excerpt')).toHaveTextContent('一番目の本文'));
+    expect(infoFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('文字数・行数・表示形式の変更は追加通信せず、上限を適用する', async () => {
+    const item = page('/Tech/Article');
+    const { infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '日本😀語'.repeat(90) } });
+    const { rerender } = render(React.createElement(PageList, { targetpath: '/Tech' }));
+    const initial = await screen.findByTestId('pagelist-excerpt');
+    expect(Array.from(initial.textContent ?? '')).toHaveLength(200);
+    expect(initial.style.webkitLineClamp).toBe('3');
+    rerender(React.createElement(PageList, { targetpath: '/Tech', view: 'card', excerptlength: '4', excerptlines: '1' }));
+    expect(screen.getByTestId('pagelist-excerpt')).toHaveTextContent('日本😀…');
+    expect(screen.getByTestId('pagelist-excerpt').style.webkitLineClamp).toBe('1');
+    rerender(React.createElement(PageList, { targetpath: '/Tech', excerptlength: '999', excerptlines: '99' }));
+    expect(Array.from(screen.getByTestId('pagelist-excerpt').textContent ?? '')).toHaveLength(350);
+    expect(screen.getByTestId('pagelist-excerpt').style.webkitLineClamp).toBe('10');
+    expect(infoFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('空本文と本文欠落を非表示にし、空本文だけを成功キャッシュにする', async () => {
+    const items = [page('/Tech/Empty', 0, 0, 1), page('/Tech/Hidden', 0, 0, 2)];
+    const { infoFetch } = mockExcerptApi(items, { [items[0]._id]: { revisionShortBody: '' }, [items[1]._id]: {} });
+    render(React.createElement(PageList, { targetpath: '/Tech', limit: '1' }));
+    await waitFor(() => expect(infoFetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText('抜粋を読み込み中...')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('pagelist-excerpt')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    await waitFor(() => expect(infoFetch).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: '前へ' }));
+    await screen.findByRole('link', { name: 'Empty' });
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    await waitFor(() => expect(infoFetch).toHaveBeenCalledTimes(3));
+    expect(screen.queryByTestId('pagelist-excerpt')).not.toBeInTheDocument();
+  });
+
+  it.each([403, 404, 500])('HTTP %sでも一覧を残し、抜粋だけ再試行できる', async (status) => {
+    const item = page('/Tech/Article');
+    const { infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '回復した本文' } });
+    infoFetch.mockResolvedValueOnce(apiResponse({}, status));
+    render(React.createElement(PageList, { targetpath: '/Tech' }));
+    expect(await screen.findByText(`抜粋を取得できませんでした (HTTP ${status})`)).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Article' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '抜粋を再試行' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('回復した本文');
+    expect(infoFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('51件を50件ずつ直列取得し、部分失敗しても成功分を残す', async () => {
+    const items = Array.from({ length: 51 }, (_, index) => page(`/Tech/Article-${index}`));
+    const info = Object.fromEntries(items.map((item) => [item._id, { revisionShortBody: `${item.path}の本文` }]));
+    const { infoFetch } = mockExcerptApi(items, info);
+    infoFetch.mockImplementationOnce(async (input) => {
+      expect(new URL(String(input), window.location.origin).searchParams.getAll('pageIds[]')).toHaveLength(50);
+      return apiResponse({ data: info });
+    }).mockResolvedValueOnce(apiResponse({}, 500));
+    render(React.createElement(PageList, { targetpath: '/Tech', limit: '51' }));
+    await screen.findByRole('button', { name: '抜粋を再試行' });
+    expect(screen.getAllByTestId('pagelist-excerpt')).toHaveLength(50);
+    expect(infoFetch).toHaveBeenCalledTimes(2);
+    expect(new URL(String(infoFetch.mock.calls[1][0]), window.location.origin).searchParams.getAll('pageIds[]')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '抜粋を再試行' }));
+    await waitFor(() => expect(screen.getAllByTestId('pagelist-excerpt')).toHaveLength(51));
+    expect(infoFetch).toHaveBeenCalledTimes(3);
+    expect(new URL(String(infoFetch.mock.calls[2][0]), window.location.origin).searchParams.getAll('pageIds[]')).toHaveLength(1);
+  });
+
+  it('表示中の画像読込失敗を更新者の頭文字へ置き換える', async () => {
+    const item = page('/Tech/Article');
+    item.lastUpdateUser!.imageUrlCached = '/missing-avatar.png';
+    mockExcerptApi([item], {});
+    render(React.createElement(PageList, { targetpath: '/Tech' }));
+    const image = await screen.findByRole('img', { name: 'テスト利用者のアイコン' });
+    expect(image.tagName).toBe('IMG');
+    fireEvent.error(image);
+    expect(screen.getByRole('img', { name: 'テスト利用者のアイコン' }).tagName).toBe('SPAN');
+    expect(screen.getByRole('img', { name: 'テスト利用者のアイコン' })).toHaveTextContent('テ');
+  });
+
+  it('HTMLをDOMとして挿入しない', async () => {
+    const item = page('/Tech/Article');
+    mockExcerptApi([item], { [item._id]: { revisionShortBody: '<script>alert(1)</script>\n\n安全な本文 <img src=x onerror=alert(1)>' } });
+    const { container } = render(React.createElement(PageList, { targetpath: '/Tech' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('安全な本文');
+    expect(container.querySelector('script, img[src="x"]')).toBeNull();
+  });
+
+  it('オンからオフへの切替で中止し、古い本文を出さず再有効化できる', async () => {
+    const item = page('/Tech/Article');
+    const { infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '新しい本文' } });
+    let complete!: (response: ReturnType<typeof apiResponse>) => void;
+    infoFetch.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const { rerender, unmount } = render(React.createElement(PageList, { targetpath: '/Tech' }));
+    await waitFor(() => expect(infoFetch).toHaveBeenCalledTimes(1));
+    const signal = infoFetch.mock.calls[0][1]?.signal;
+    rerender(React.createElement(PageList, { targetpath: '/Tech', excerpt: 'false' }));
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { complete(apiResponse({ data: { [item._id]: { revisionShortBody: '古い本文' } } })); });
+    expect(screen.queryByTestId('pagelist-excerpt')).not.toBeInTheDocument();
+    rerender(React.createElement(PageList, { targetpath: '/Tech', excerpt: 'true' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('新しい本文');
+    expect(infoFetch).toHaveBeenCalledTimes(2);
+    unmount();
+    expect(infoFetch.mock.calls[1][1]?.signal?.aborted).toBe(true);
+  });
+
+  it('ページ切替の遅い応答は新しい抜粋とキャッシュを上書きしない', async () => {
+    const items = [page('/Tech/First', 0, 0, 1), page('/Tech/Second', 0, 0, 2)];
+    const { infoFetch } = mockExcerptApi(items, { [items[1]._id]: { revisionShortBody: '二番目' } });
+    let complete!: (response: ReturnType<typeof apiResponse>) => void;
+    infoFetch.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render(React.createElement(PageList, { targetpath: '/Tech', limit: '1' }));
+    await waitFor(() => expect(infoFetch).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: '次へ' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('二番目');
+    await act(async () => { complete(apiResponse({ data: { [items[0]._id]: { revisionShortBody: '遅い本文' } } })); });
+    expect(screen.getByTestId('pagelist-excerpt')).toHaveTextContent('二番目');
+    expect(infoFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it('対象変更時に同じIDのキャッシュを流用せず、更新日時が変わった本文も再取得する', async () => {
+    const item = page('/Tech/Article');
+    const { fetchMock, infoFetch } = mockExcerptApi([item], { [item._id]: { revisionShortBody: '変更前' } });
+    const { rerender } = render(React.createElement(PageList, { targetpath: '/Tech' }));
+    expect(await screen.findByTestId('pagelist-excerpt')).toHaveTextContent('変更前');
+    infoFetch.mockResolvedValue(apiResponse({ data: { [item._id]: { revisionShortBody: '変更後' } } }));
+    fetchMock.mockImplementation(async (input, init) => String(input).includes('/page-listing/info?')
+      ? infoFetch(input, init) : apiResponse({ data: { pages: [{ ...item, updatedAt: new Date().toISOString() }], totalCount: 1 } }));
+    rerender(React.createElement(PageList, { targetpath: '/' }));
+    await waitFor(() => expect(screen.getByTestId('pagelist-excerpt')).toHaveTextContent('変更後'));
+    expect(infoFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('空一覧からオンオフを切り替えてもHooksの順序を保ち、本文取得しない', async () => {
+    const { infoFetch } = mockExcerptApi([], {});
+    const { rerender } = render(React.createElement(PageList, { targetpath: '/Tech' }));
+    await screen.findByTestId('pagelist-empty');
+    rerender(React.createElement(PageList, { targetpath: '/Tech', excerpt: 'false' }));
+    rerender(React.createElement(PageList, { targetpath: '/Tech', excerpt: 'true' }));
+    expect(screen.getByTestId('pagelist-empty')).toBeVisible();
+    expect(infoFetch).not.toHaveBeenCalled();
   });
 });

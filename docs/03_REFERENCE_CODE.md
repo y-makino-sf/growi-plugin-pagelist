@@ -1,5 +1,7 @@
 # リファレンス実装コード集（パターン1完全版）
 
+> 以下は抜粋機能追加前の初期リファレンスです。現在の実装には `excerpt` / `excerptlength` / `excerptlines`、標準の短縮本文API、更新者アイコンと足跡表示が追加されています。最新の仕様は `01_RESEARCH_REPORT.md` と `02_TEST_AND_SANDBOX_SPEC.md`、実行可能な実装はルートと `src/` のソースコードを参照してください。本書のコードだけで上書きしないでください。
+
 ## 1. `package.json`
 ```json
 {
